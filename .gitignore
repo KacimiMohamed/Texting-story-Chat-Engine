@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+
+# Database
+db.sqlite3
+
+# Assets & Media (Optional: keeps repo size small)
+assets/sfx/
+media/

@@ -13,19 +13,20 @@ class CharacterAdmin(admin.ModelAdmin):
 class MessageInline(admin.TabularInline):
     model = Message
     extra = 0
-    fields = ("order", "character", "text", "image_file", "audio_file", "delay", "sfx_choice")
+    fields = ("order", "character", "text", "image", "image_file", "audio_file", "delay", "sfx_choice")
     ordering = ("order", "id")
     autocomplete_fields = ("character",)
 
 
 @admin.register(Story)
 class StoryAdmin(admin.ModelAdmin):
-    list_display = ("title", "bg_color")
+    list_display = ("title", "sender", "bg_color")
     search_fields = ("title",)
     filter_horizontal = ("characters",)
     inlines = [MessageInline]
     actions = ("generate_video",)
-    fields = ("title", "group_image")
+    fields = ("title", "sender", "group_image")
+    autocomplete_fields = ("sender",)
 
     @admin.action(description="Generate Video")
     def generate_video(self, request, queryset):
@@ -58,4 +59,4 @@ class MessageAdmin(admin.ModelAdmin):
     autocomplete_fields = ("story", "character")
     
     # This forces Django to show the image_file upload button right after the text box
-    fields = ("story", "character", "text", "image_file", "audio_file", "delay", "sfx_choice", "order")
+    fields = ("story", "character", "text", "image", "image_file", "audio_file", "delay", "sfx_choice", "order")

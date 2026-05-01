@@ -23,6 +23,13 @@ class Story(models.Model):
     title = models.CharField(max_length=200)
     bg_color = models.CharField(max_length=20, default="#ffffff")
     characters = models.ManyToManyField(Character, related_name="stories", blank=True)
+    sender = models.ForeignKey(
+        Character,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="sent_stories",
+    )
     group_image = models.ImageField(upload_to="group_headers/", blank=True, null=True)
 
     class Meta:
@@ -47,6 +54,7 @@ class Message(models.Model):
         Character, on_delete=models.CASCADE, related_name="messages"
     )
     text = models.TextField()
+    image = models.ImageField(upload_to="chat_images/", null=True, blank=True)
     image_file = models.ImageField(upload_to="messages/", blank=True, null=True)
     audio_file = models.FileField(upload_to="messages_audio/", blank=True, null=True)
     delay = models.PositiveIntegerField(

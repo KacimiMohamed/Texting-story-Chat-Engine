@@ -1,4 +1,5 @@
 from django.db import models
+from django.core.exceptions import ValidationError
 
 
 class Character(models.Model):
@@ -53,7 +54,7 @@ class Message(models.Model):
     character = models.ForeignKey(
         Character, on_delete=models.CASCADE, related_name="messages"
     )
-    text = models.TextField()
+    text = models.TextField(blank=True, null=True)
     image = models.ImageField(upload_to="chat_images/", null=True, blank=True)
     image_file = models.ImageField(upload_to="messages/", blank=True, null=True)
     audio_file = models.FileField(upload_to="messages_audio/", blank=True, null=True)
@@ -70,6 +71,10 @@ class Message(models.Model):
 
     class Meta:
         ordering = ["story", "order", "created_at", "id"]
+
+    def clean(self):
+        if not self.text and not self.image:
+            raise ValidationError("A message must contain either text or an image.")
 
     def __str__(self) -> str:
         return f"{self.story.title}: {self.character.name}"

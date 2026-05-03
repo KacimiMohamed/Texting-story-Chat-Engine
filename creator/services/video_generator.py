@@ -12,9 +12,11 @@ from moviepy.config import change_settings
 from moviepy.editor import (
     AudioFileClip,
     CompositeAudioClip,
+    CompositeVideoClip,
     ImageClip,
     concatenate_videoclips,
 )
+import moviepy.video.fx.all as vfx
 
 from creator.models import Message, Story
 
@@ -30,6 +32,7 @@ BUBBLE_PADDING_X = 30
 BUBBLE_PADDING_Y = 20
 BUBBLE_RADIUS = 40
 STACK_GAP = 20
+CLUSTER_GAP = 4
 ENTRY_Y = 1750
 HEADER_CUTOFF_Y = 220
 TEXT_SIZE = 45
@@ -43,6 +46,11 @@ COLOR_OUTGOING = "#3797F0"
 COLOR_TEXT = "#FFFFFF"
 COLOR_NAME_TEXT = "#A8A8A8"
 CONTAINER_RADIUS = 50
+
+# When a message has no TTS audio, clip length used to default to 2s (long silence after SFX).
+# Clips are concatenated back-to-back; this value is only the hold for text/image-only beats.
+NO_VOICE_MIN_CLIP_DURATION = 0.1
+OVERLAP_DURATION = 0.3
 
 
 class VideoGenerator:
@@ -129,9 +137,9 @@ class VideoGenerator:
         return lines
 
     def _load_message_image(self, message: Message, max_side: int) -> Image.Image | None:
-        if not message.image_file:
+        if not message.image:
             return None
-        src_path = Path(settings.MEDIA_ROOT) / message.image_file.name
+        src_path = Path(settings.MEDIA_ROOT) / message.image.name
         if not src_path.exists():
             return None
         with Image.open(src_path) as src:
@@ -248,7 +256,14 @@ class VideoGenerator:
         header = self._apply_top_corner_radius(header, CONTAINER_RADIUS)
         return np.array(header)
 
-    def _bubble_visual(self, message: Message, outgoing: bool) -> tuple[np.ndarray, int]:
+    def _bubble_visual(
+        self,
+        message: Message,
+        outgoing: bool,
+        *,
+        draw_name: bool = True,
+        draw_avatar: bool = True,
+    ) -> tuple[np.ndarray, int]:
         text_font = self._font(TEXT_SIZE)
         name_font = self._name_font(NAME_SIZE)
 
@@ -265,19 +280,43 @@ class VideoGenerator:
                 # Missing file fallback to normal text message path.
                 pass
             else:
+                if outgoing:
+                    photo_y = 0
+                    total_h = chat_photo.height
+                    photo_x = 0
+                    canvas_w = photo_x + chat_photo.width
+                    canvas = Image.new("RGBA", (canvas_w, total_h), (0, 0, 0, 0))
+                    # Outgoing keeps standard layout (no name/avatar), with borderless rounded photo.
+                    canvas.alpha_composite(chat_photo, (photo_x, photo_y))
+                    return np.array(canvas), total_h
+
                 name_h = name_font.getbbox(message.character.name)[3] - name_font.getbbox(
                     message.character.name
                 )[1]
-                photo_y = name_h + 10
+                photo_y = (name_h + 10) if draw_name else 0
                 total_h = photo_y + chat_photo.height + BUBBLE_PADDING_Y
-                photo_x = 0 if outgoing else BUBBLE_OFFSET_X
-                canvas_w = photo_x + chat_photo.width
-
+                photo_x = BUBBLE_OFFSET_X
+                canvas_w = max(AVATAR_SIZE, photo_x + chat_photo.width)
                 canvas = Image.new("RGBA", (canvas_w, total_h), (0, 0, 0, 0))
-                with Pilmoji(canvas) as pilmoji:
-                    pilmoji.text(
-                        (photo_x, 0), message.character.name, font=name_font, fill=name_rgb + (255,)
-                    )
+                if draw_name:
+                    with Pilmoji(canvas) as pilmoji:
+                        pilmoji.text(
+                            (photo_x, 0), message.character.name, font=name_font, fill=name_rgb + (255,)
+                        )
+                if draw_avatar:
+                    avatar_y = total_h - AVATAR_SIZE - 5
+                    char_img_field = getattr(message.character, "avatar", None)
+                    char_avatar = self._get_circular_avatar(char_img_field, AVATAR_SIZE)
+                    if char_avatar:
+                        canvas.alpha_composite(char_avatar, (0, int(avatar_y)))
+                    else:
+                        draw = ImageDraw.Draw(canvas)
+                        draw.ellipse((0, avatar_y, AVATAR_SIZE, avatar_y + AVATAR_SIZE), fill="#333333")
+                        initial = message.character.name[0].upper() if message.character.name else "U"
+                        with Pilmoji(canvas) as pilmoji:
+                            pilmoji.text(
+                                (22, avatar_y + 15), initial, fill="#FFFFFF", font=self._font(28, bold=True)
+                            )
                 # No bubble/background behind the photo.
                 canvas.alpha_composite(chat_photo, (photo_x, photo_y))
                 return np.array(canvas), total_h
@@ -307,7 +346,7 @@ class VideoGenerator:
             name_h = name_font.getbbox(message.character.name)[3] - name_font.getbbox(
                 message.character.name
             )[1]
-            bubble_y = name_h + 10
+            bubble_y = (name_h + 10) if draw_name else 0
             total_h = bubble_y + bubble_h
             bubble_x = BUBBLE_OFFSET_X
             canvas_w = bubble_x + body_width
@@ -321,23 +360,25 @@ class VideoGenerator:
         )
 
         if not outgoing:
-            with Pilmoji(canvas) as pilmoji:
-                pilmoji.text(
-                    (bubble_x, 0), message.character.name, font=name_font, fill=name_rgb + (255,)
-                )
-            avatar_y = total_h - AVATAR_SIZE - 5
-            char_img_field = getattr(message.character, "avatar", None)
-            char_avatar = self._get_circular_avatar(char_img_field, AVATAR_SIZE)
-            if char_avatar:
-                canvas.alpha_composite(char_avatar, (0, int(avatar_y)))
-            else:
-                # Fallback if no image uploaded
-                draw.ellipse((0, avatar_y, AVATAR_SIZE, avatar_y + AVATAR_SIZE), fill="#333333")
-                initial = message.character.name[0].upper() if message.character.name else "U"
+            if draw_name:
                 with Pilmoji(canvas) as pilmoji:
                     pilmoji.text(
-                        (22, avatar_y + 15), initial, fill="#FFFFFF", font=self._font(28, bold=True)
+                        (bubble_x, 0), message.character.name, font=name_font, fill=name_rgb + (255,)
                     )
+            if draw_avatar:
+                avatar_y = total_h - AVATAR_SIZE - 5
+                char_img_field = getattr(message.character, "avatar", None)
+                char_avatar = self._get_circular_avatar(char_img_field, AVATAR_SIZE)
+                if char_avatar:
+                    canvas.alpha_composite(char_avatar, (0, int(avatar_y)))
+                else:
+                    # Fallback if no image uploaded
+                    draw.ellipse((0, avatar_y, AVATAR_SIZE, avatar_y + AVATAR_SIZE), fill="#333333")
+                    initial = message.character.name[0].upper() if message.character.name else "U"
+                    with Pilmoji(canvas) as pilmoji:
+                        pilmoji.text(
+                            (22, avatar_y + 15), initial, fill="#FFFFFF", font=self._font(28, bold=True)
+                        )
 
         y = bubble_y + BUBBLE_PADDING_Y
         for line in lines:
@@ -374,20 +415,10 @@ class VideoGenerator:
                 return candidate
         return None
 
-    def _sfx_map(self) -> dict:
-        from django.conf import settings
-        from pathlib import Path
-        
-        sfx_dir = Path(settings.BASE_DIR) / 'assets' / 'sfx'
-        
-        # Maps the database string to the actual file on your computer
-        return {
-            "ping": sfx_dir / "ping.mp3",
-            "vine_boom": sfx_dir / "vine_boom.mp3",
-            "bruh": sfx_dir / "bruh.mp3",
-            "camera_shutter": sfx_dir / "camera.mp3",
-            "notification": sfx_dir / "notification.mp3",
-        }
+    def _sfx_map(self) -> dict[str, Path]:
+        from creator.sfx_registry import discover_sfx_map
+
+        return discover_sfx_map()
 
     def _apply_volume(self, clip: AudioFileClip, volume: float) -> AudioFileClip:
         if hasattr(clip, "with_volume_scaled"):
@@ -418,7 +449,7 @@ class VideoGenerator:
 
         header_rgba = Image.fromarray(self._header_visual()).convert("RGBA")
 
-        visual_messages = [m for m in messages if (m.text or "").strip() or m.image_file or m.image]
+        visual_messages = [m for m in messages if (m.text or "").strip() or m.image]
         if not visual_messages:
             raise ValueError("Story has no drawable messages.")
 
@@ -428,6 +459,7 @@ class VideoGenerator:
         sfx_volume = float(getattr(settings, "SFX_DEFAULT_VOLUME", 0.7))
         anchor_id = self.story.sender_id
         all_clips: list[ImageClip] = []
+        timeline_seconds = 0.0
 
         for chunk in chunked_messages:
             current_displayed_messages: list[Message] = []
@@ -440,13 +472,32 @@ class VideoGenerator:
 
                 rendered_bubbles: list[tuple[np.ndarray, int, int]] = []
                 current_y = HEADER_HEIGHT + 1
-                for displayed_msg in current_displayed_messages:
+                for i, displayed_msg in enumerate(current_displayed_messages):
                     outgoing = anchor_id is not None and displayed_msg.character_id == anchor_id
-                    bubble_np, bubble_h = self._bubble_visual(displayed_msg, outgoing=outgoing)
+                    prev_msg = current_displayed_messages[i - 1] if i > 0 else None
+                    next_msg = (
+                        current_displayed_messages[i + 1]
+                        if i < len(current_displayed_messages) - 1
+                        else None
+                    )
+                    is_first_in_cluster = (
+                        prev_msg is None or prev_msg.character_id != displayed_msg.character_id
+                    )
+                    is_last_in_cluster = (
+                        next_msg is None or next_msg.character_id != displayed_msg.character_id
+                    )
+
+                    bubble_np, bubble_h = self._bubble_visual(
+                        displayed_msg,
+                        outgoing=outgoing,
+                        draw_name=(is_first_in_cluster and not outgoing),
+                        draw_avatar=(is_last_in_cluster and not outgoing),
+                    )
                     bubble_w = int(bubble_np.shape[1])
                     bubble_x = VIDEO_WIDTH - bubble_w - 40 if outgoing else 40
                     rendered_bubbles.append((bubble_np, bubble_x, current_y))
-                    current_y += bubble_h + STACK_GAP
+                    gap = STACK_GAP if is_last_in_cluster else CLUSTER_GAP
+                    current_y += bubble_h + gap
 
                 final_y = current_y - STACK_GAP if rendered_bubbles else HEADER_HEIGHT
                 black_bottom = min(VIDEO_HEIGHT - 1, int(final_y) + 70)
@@ -462,14 +513,34 @@ class VideoGenerator:
 
                 msg_delay = (msg.delay or 0) / 1000.0
                 voice_clip = self._voice_clip_for_message(msg)
+                if voice_clip:
+                    speed_factor = float(getattr(settings, 'GLOBAL_AUDIO_SPEED', 1.0))
+
+                    if speed_factor > 1.0:
+                        try:
+                            # Try MoviePy v2.0+ syntax first
+                            voice_clip = voice_clip.fx(vfx.multiply_speed, speed_factor)
+                        except AttributeError:
+                            # Fall back to MoviePy v1.x syntax
+                            voice_clip = voice_clip.fx(vfx.speedx, speed_factor)
                 voice_duration = float(voice_clip.duration or 0.0) if voice_clip else 0.0
-                base_duration = voice_duration if voice_duration > 0 else 2.0
+
+                selected_sfx = sfx_map.get(msg.sfx_choice)
+                sfx_duration = 0.0
+                if selected_sfx and selected_sfx.exists():
+                    sd = self._audio_duration(selected_sfx)
+                    if sd is not None:
+                        sfx_duration = float(sd)
+
+                if voice_duration > 0 or sfx_duration > 0:
+                    base_duration = max(voice_duration, sfx_duration)
+                else:
+                    base_duration = NO_VOICE_MIN_CLIP_DURATION
                 clip_duration = max(0.05, msg_delay + base_duration)
 
                 clip = ImageClip(np.array(frame)).set_duration(clip_duration)
 
                 clip_audio_layers: list[AudioFileClip] = []
-                selected_sfx = sfx_map.get(msg.sfx_choice)
                 if selected_sfx and selected_sfx.exists():
                     sfx_clip = self._apply_volume(AudioFileClip(str(selected_sfx)), sfx_volume).set_start(
                         msg_delay
@@ -485,13 +556,20 @@ class VideoGenerator:
                 if clip_audio_layers:
                     clip = clip.set_audio(CompositeAudioClip(clip_audio_layers).set_duration(clip_duration))
 
+                start_time = max(0.0, float(timeline_seconds))
+                clip = clip.set_start(start_time)
                 all_clips.append(clip)
+
+                # Aggressively overlap to hide TTS dead air.
+                timeline_seconds = max(0.0, timeline_seconds + (clip_duration - OVERLAP_DURATION))
 
         if not all_clips:
             raise ValueError("No progressive clips were generated from messages.")
 
-        composite = concatenate_videoclips(all_clips, method="compose")
-        composite = composite.set_duration(sum(float(c.duration or 0.0) for c in all_clips))
+        composite = CompositeVideoClip(all_clips, size=(VIDEO_WIDTH, VIDEO_HEIGHT))
+        composite = composite.set_duration(
+            max(float(c.start or 0.0) + float(c.duration or 0.0) for c in all_clips)
+        )
         has_audio = any(c.audio is not None for c in all_clips)
 
         target = (

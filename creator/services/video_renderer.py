@@ -25,7 +25,8 @@ BUBBLE_RADIUS = 34
 MESSAGE_GAP_Y = 20
 TEXT_SIZE = 40
 NAME_SIZE = 28
-SLIDE_DURATION = 0.45
+# Entrance/stacking animations removed: hard-cut positioning only.
+SLIDE_DURATION = 0.0
 MEME_DURATION = 1.8
 
 
@@ -166,16 +167,7 @@ def _build_bubble_positioner(
 
         base_y = VIDEO_HEIGHT - BUBBLE_BOTTOM_MARGIN - this_bubble.height
         target_y = base_y - total_push
-
-        # Smooth upward slide while each push event happens.
-        animated_y = target_y
-        for later in all_bubbles[index + 1 :]:
-            if later.start_time <= t < later.start_time + SLIDE_DURATION:
-                slide_progress = (t - later.start_time) / SLIDE_DURATION
-                eased = 1 - math.pow(1 - slide_progress, 3)
-                animated_y += (later.height + MESSAGE_GAP_Y) * (1 - eased)
-
-        return BUBBLE_MARGIN_X, animated_y
+        return BUBBLE_MARGIN_X, target_y
 
     return position_at
 
@@ -232,8 +224,8 @@ def render_story_video(story: Story, output_path: str | Path, fps: int = 30) -> 
             )
         )
 
-        if msg.image_file:
-            image_path = Path(settings.MEDIA_ROOT) / msg.image_file.name
+        if msg.image:
+            image_path = Path(settings.MEDIA_ROOT) / msg.image.name
             if image_path.exists():
                 meme_clips.append(_render_meme_clip(str(image_path), timeline_seconds))
 
